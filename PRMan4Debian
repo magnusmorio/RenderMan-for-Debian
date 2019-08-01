@@ -1,0 +1,100 @@
+#!/bin/bash
+#
+# Description: Pixar's RenderMan installation script for Debian-based GNU/Linux distributions
+#
+# Note: the script has never been tested on any machine other than the script's author one; use on your own risk
+# Have any issues or questions? -- mail me at Gmail:    moriomagnus@gmail.com
+#                                       or DM Twitter:  twitter.com/magnusmorio
+#                                             Telegram: t.me/magnusmorio
+# MIT License
+#
+# Copyright (c) 2019 Magnus Morio
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# Require root privileges
+if [ "$(whoami)" != root ]; then
+    echo "Please, run the script as root (e.g., using sudo)" && exit
+fi
+
+set -e
+cwd=$(dirname "$0")
+username=$([ "$1" != "" ] && echo "$1" || read -p "RenderMan Forum User ID: " && echo "$REPLY")
+password=$([ "$2" != "" ] && echo "$2" || read -p "RenderMan Forum Password: " && echo "$REPLY")
+serial=$( \
+[ "$3" != "" ] && [ "$3" != "none" ]                                    `#IF: 3rd argument present and != "none"` \
+    && echo "$3"                                                            `#THEN: use the argument's value` \
+|| [ "$3" == "none" ]                                                   `#ELSE IF: 3rd argument present and == "none"` \
+    && echo ""                                                              `#THEN: use an empty string` \
+|| read -p "Serial Number (leave empty if none): " && echo "$REPLY")    `#ELSE: prompt user for input`
+mode=$([ "$serial" == "" ] && echo "ncr" || echo "commercial")
+version="$4"
+log=$cwd/p4d.log
+
+# Function for restoring RenderMan installer(s)
+function restore_installers {
+    for rman_package in ./*RenderMan*Installer*"$version"*.rpm; do
+        mv "$rman_package" ../ 2>> "$log"
+    done
+}
+
+function errexit {
+    echo "There are errors occurred during the installation process, please check $log for details"
+    restore_installers
+}
+
+trap errexit ERR EXIT
+
+mkdir -p "$cwd/.install" && cd "$_"
+
+echo "Installing rpm2cpio and libssl packages" && apt install -y rpm2cpio libssl1.0.* >"$log" 2>&1
+
+# Manually install RenderMan installer(s)
+for rman_package in "$cwd"/*RenderMan*Installer*"$version"*.rpm; do
+    echo "Installing $(basename "$rman_package")"
+    rpm2cpio "$rman_package" 2>> "$log" | cpio -idmB 2>> "$log" && mv "$rman_package" ./ 2>> "$log"
+done
+cp -r ./opt / 2>> "$log"
+
+# Addressing "Failed to query serial number" error by linking to the host's libssl.so.1.0.x
+for rman_installer_dir in /opt/pixar/*RenderMan*Installer*"$version"*; do
+    qt_libssl=($rman_installer_dir/lib/3rdparty/Qt*); qt_libssl=$qt_libssl/lib/libssl.so
+    host_libssl=(/usr/lib/x86_64-linux-gnu/libssl.so.1.0.*)
+    ln -sf $host_libssl $qt_libssl 2>> "$log"
+
+    # Run the installer right after the fix
+    $rman_installer_dir/bin/RenderManInstaller -user "$username" -pass "$password" -serial "$serial" -"$mode" 2>> "$log"
+done
+
+# Manually install all user-opted RenderMan packages fetched by the RenderManInstaller executable
+#
+# Rationale: On Debian-based distributions, installation via alien, or rpm (which is the case for RenderManInstaller executable),
+# may end up incorrectly unpacking the package's contents or cease to unpack the package at all, resulting in missing files
+# and/or directories, hence manual installation; i.e., it is done on top of the by-RenderManInstaller installation to ensure
+# both consistency and integrity of the installed files
+for rman_package in "$cwd"/*RenderMan*"$version"*.rpm; do
+    echo "Installing $(basename "$rman_package")"
+    rpm2cpio "$rman_package" 2>> "$log" | cpio -idmB 2>> "$log"
+done
+cp -r ./opt / 2>> "$log"
+
+restore_installers
+
+# Remove installation files
+rm -r "$cwd/.install" 2>> "$log"
